@@ -89,6 +89,7 @@ export const getBaseURL = () => {
 
 export const getPlatformURL = (ws?: boolean) => {
   const platformUrl = new URL(window.location.origin + getBaseURL());
+  // bconst platformUrl = new URL("http://192.168.178.43" + getBaseURL());
 
   if (import.meta.env.DEV) {
     platformUrl.port = import.meta.env.VITE_APP_PLATFORM_PORT ?? "9999";

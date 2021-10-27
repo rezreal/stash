@@ -30,6 +30,7 @@ import { languageMap } from "src/utils/caption";
 import { VIDEO_PLAYER_ID } from "./util";
 
 function handleHotkeys(player: VideoJsPlayer, event: VideoJS.KeyboardEvent) {
+
   function seekPercent(percent: number) {
     const duration = player.duration();
     const time = duration * percent;
@@ -140,6 +141,24 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
 
   const [time, setTime] = useState(0);
 
+  const audioFormats = [".mp3", ".flac", ".ogg", ".wav"];
+  const isAudio = audioFormats.some(fmt => (scene?.path || '').endsWith(fmt))
+
+  type KnockRodParams = { min: number; max: number; smoothness: number };
+  const [knockrodParams, setKnockrodParams] = useState<KnockRodParams>(
+    JSON.parse(
+      window.localStorage.getItem("rod") ||
+        '{ "min": 5000, "max": 10000, "smoothness": 30 }'
+    )
+  );
+
+  // Store rod params on dispose
+  useEffect(() => {
+    return () => {
+      window.localStorage.setItem("rod", JSON.stringify(knockrodParams));
+    };
+  }, [knockrodParams]);
+
   const {
     interactive: interactiveClient,
     uploadScript,
@@ -147,6 +166,19 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
     initialised: interactiveInitialised,
     state: interactiveState,
   } = React.useContext(InteractiveContext);
+
+  // push params to knockrod
+  useEffect(() => {
+    interactiveClient.setKnockRodParams(knockrodParams);
+  }, [knockrodParams, interactiveClient]);
+
+  // Dispose interactive client on player close
+  useEffect(() => {
+    return () => {
+      console.info("time to dispose");
+      interactiveClient?.dispose();
+    };
+  }, [interactiveClient]);
 
   const [initialTimestamp] = useState(timestamp);
   const [ready, setReady] = useState(false);
@@ -429,7 +461,7 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
     function onPlay(this: VideoJsPlayer) {
       this.poster("");
       if (scene?.interactive && interactiveReady.current) {
-        interactiveClient.play(this.currentTime());
+        interactiveClient.play(this.currentTime(), this.playbackRate());
       }
     }
 
@@ -439,7 +471,10 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
 
     function timeupdate(this: VideoJsPlayer) {
       if (scene?.interactive && interactiveReady.current) {
-        interactiveClient.ensurePlaying(this.currentTime());
+        interactiveClient.ensurePlaying(
+          this.currentTime(),
+          this.playbackRate()
+        );
       }
       setTime(this.currentTime());
     }
@@ -459,7 +494,7 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
     }
 
     function loadedmetadata(this: VideoJsPlayer) {
-      if (!this.videoWidth() && !this.videoHeight()) {
+      if (!isAudio && !this.videoWidth() && !this.videoHeight()) {
         // Occurs during preload when videos with supported audio/unsupported video are preloaded.
         // Treat this as a decoding error and try the next source without playing.
         // However on Safari we get an media event when m3u8 is loaded which needs to be ignored.
@@ -544,7 +579,7 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
       );
     }
 
-    if (scene.captions?.length! > 0) {
+    if (scene.captions?.length || 0 > 0) {
       loadCaptions(player);
     }
 
@@ -560,7 +595,9 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
     player.load();
     player.focus();
 
-    if ((player as any).vttThumbnails?.src)
+    if (isAudio) {
+      // noop
+    } else if ((player as any).vttThumbnails?.src)
       (player as any).vttThumbnails?.src(scene?.paths.vtt);
     else
       (player as any).vttThumbnails({
@@ -654,20 +691,85 @@ export const ScenePlayer: React.FC<IScenePlayerProps> = ({
     scene.file.width &&
     scene.file.height > scene.file.width;
 
+
   return (
     <div className={cx("VideoPlayer", { portrait: isPortrait })}>
       <div data-vjs-player className={cx("video-wrapper", className)}>
-        <video
-          playsInline
-          ref={videoRef}
-          id={VIDEO_PLAYER_ID}
-          className="video-js vjs-big-play-centered"
-        />
+        {isAudio ? (
+          <audio
+            playsInline
+            ref={videoRef}
+            id={VIDEO_PLAYER_ID}
+            className="video-js"
+          ></audio>
+        ) : (
+          <video
+            playsInline
+            ref={videoRef}
+            id={VIDEO_PLAYER_ID}
+            className="video-js vjs-big-play-centered"
+          />
+        )}
       </div>
       {scene?.interactive &&
         (interactiveState !== ConnectionState.Ready ||
           playerRef.current?.paused()) && <SceneInteractiveStatus />}
-      {scene && (
+      {scene?.interactive && (
+        <div>
+          KnockRod:&nbsp;
+          <label>
+            <span>Min depth:</span>
+            <input
+              style={{ width: "200px" }}
+              type="range"
+              min="1000"
+              max="17000"
+              step="10"
+              value={knockrodParams.min}
+              onChange={(e) =>
+                setKnockrodParams((p) => ({
+                  ...p,
+                  min: Number.parseInt(e.target.value),
+                }))
+              }
+            />
+          </label>
+          <label>
+            <span>Max depth:</span>
+            <input
+              style={{ width: "200px" }}
+              type="range"
+              min="1000"
+              max="17000"
+              step="10"
+              value={knockrodParams.max}
+              onChange={(e) =>
+                setKnockrodParams((p) => ({
+                  ...p,
+                  max: Number.parseInt(e.target.value),
+                }))
+              }
+            />
+          </label>
+          <label>
+            <span>Smoothness:</span>
+            <input
+              type="range"
+              min="10"
+              max="60"
+              step="1"
+              value={knockrodParams.smoothness}
+              onChange={(e) =>
+                setKnockrodParams((p) => ({
+                  ...p,
+                  smoothness: Number.parseInt(e.target.value),
+                }))
+              }
+            />
+          </label>
+        </div>
+      )}
+      {scene && !isAudio && (
         <ScenePlayerScrubber
           scene={scene}
           position={time}

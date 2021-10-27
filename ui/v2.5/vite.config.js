@@ -16,10 +16,11 @@ export default defineConfig({
   },
   publicDir: 'public',
   assetsInclude: ['**/*.md'],
-  plugins: [tsconfigPaths(),
+  plugins: [
+    tsconfigPaths(),
     viteCompression({
     algorithm: 'gzip',
-    disable: false,
+    disable: true,
     deleteOriginFile: true,
     filter: /\.(js|json|css|svg|md)$/i
   })

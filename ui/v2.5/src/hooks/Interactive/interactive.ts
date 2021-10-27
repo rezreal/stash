@@ -5,10 +5,13 @@ import {
   CsvUploadResponse,
   HandyFirmwareStatus,
 } from "thehandy/lib/types";
+import { KnockRod, ShockRodSize } from "./knockRod";
+import { KnockRodState } from "./knockRodState";
+import sortedIndexBy from "lodash.sortedindexby";
 
 interface IFunscript {
   actions: Array<IAction>;
-  inverted: boolean;
+  inverted?: boolean;
   range: number;
 }
 
@@ -132,6 +135,13 @@ export class Interactive {
   }
 
   async uploadScript(funscriptPath: string) {
+    console.info("uploading scripts");
+    await this.uploadScriptKnockRod(funscriptPath);
+    try {
+    } catch (e) {
+      console.error("coud not connect to knockrod...", e);
+    }
+
     if (!(this._handy.connectionKey && funscriptPath)) {
       return;
     }
@@ -159,31 +169,40 @@ export class Interactive {
     this._handy.estimatedServerTimeOffset = offset;
   }
 
-  async play(position: number) {
+  async play(atSeconds: number, playbackRate: number) {
+    if (this._knockRod) {
+      await this.playKnockRod(atSeconds, playbackRate);
+    }
+
     if (!this._connected) {
       return;
     }
 
     this._playing = await this._handy
       .setHsspPlay(
-        Math.round(position * 1000 + this._scriptOffset),
+        Math.round(atSeconds * 1000 + this._scriptOffset),
         this._handy.estimatedServerTimeOffset + Date.now() // our guess of the Handy server's UNIX epoch time
       )
       .then(() => true);
   }
 
   async pause() {
+    if (this._pendingKnockRodTick) {
+      clearTimeout(this._pendingKnockRodTick);
+    }
+    this._knockRodPlaying = false;
+
     if (!this._connected) {
       return;
     }
     this._playing = await this._handy.setHsspStop().then(() => false);
   }
 
-  async ensurePlaying(position: number) {
+  async ensurePlaying(position: number, playbackRate: number) {
     if (this._playing) {
       return;
     }
-    await this.play(position);
+    await this.play(position, playbackRate);
   }
 
   async setLooping(looping: boolean) {
@@ -192,4 +211,168 @@ export class Interactive {
     }
     this._handy.setHsspLoop(looping);
   }
+
+  async uploadScriptKnockRod(funscriptPath: string) {
+    const json = await fetch(funscriptPath).then((response) => response.json());
+    console.info("json:", json);
+    this._script = json;
+    if (this._script?.inverted !== undefined) {
+      this._knockRodInvert = !this._script.inverted; // double invert
+    }
+
+    if (this._knockRod) {
+      await this._knockRod.moveRetract();
+      console.info("loading json");
+    }
+    if (!this._knockRod) {
+      this._knockRod = await this.connectKnockRod();
+    }
+  }
+
+  setKnockRodParams(params: { min: number; max: number; smoothness: number }) {
+    this._knockRodParams = { ...params };
+  }
+
+  static interpolate(a: number, b: number, frac: number): number {
+    // points A and B, frac 0..1
+    return a + (b - a) * frac;
+  }
+  static interpolateAction(a: IAction, b: IAction, at: number): IAction {
+    const frac = (at - a.at) / b.at;
+    return {
+      pos: Interactive.interpolate(a.pos, b.pos, frac),
+      at: Interactive.interpolate(a.at, b.at, frac),
+    };
+  }
+
+  private async connectKnockRod(): Promise<KnockRod> {
+    const ports = await window.navigator.serial.getPorts();
+    const port =
+      ports.length === 0
+        ? await window.navigator.serial.requestPort({})
+        : ports[0];
+    const t = new KnockRod(port, ShockRodSize.EightInch);
+    t.addEventListener("stateChange", (e) => {
+      this._knockRodState = e.detail.state;
+    });
+    await t.init();
+    console.info("Rod initialized");
+    return t;
+  }
+
+  findIndexBefore(at: number) {
+    return sortedIndexBy(this._script?.actions, { at, pos: 0 }, "at");
+  }
+
+  async dispose() {
+    console.info("disposing client");
+    this._playing = false;
+    if (this._pendingKnockRodTick) {
+      clearTimeout(this._pendingKnockRodTick);
+    }
+    if (this._knockRod) {
+      await this._knockRod.setServo(false);
+      await this._knockRod.dispose();
+    }
+    console.info("disposed");
+  }
+
+  async playKnockRod(atSeconds: number, playbackRate: number) {
+    if (!this._script) {
+      return;
+    }
+
+    this._playbackRate = playbackRate;
+    const at = Math.floor(atSeconds * 1000) + this._scriptOffset;
+    clearTimeout(this._pendingKnockRodTick);
+
+    this._knockRodPlaying = true;
+
+    const nextIndex = Math.max(this.findIndexBefore(at));
+    const nextAction = this._script!.actions[nextIndex];
+    this._currentIndex = nextIndex - 1;
+    const previousAction = this._script!.actions[this._currentIndex] || {
+      at: 0,
+      pos: nextAction.pos,
+    };
+
+    this._currentAction =
+      at < previousAction.at
+        ? { at: 0, pos: 0 }
+        : Interactive.interpolateAction(previousAction, nextAction, at);
+
+    this.tick();
+  }
+
+  tick() {
+    if (!this._playing) {
+      return;
+    }
+    const next = this._script?.actions[this._currentIndex + 1] || undefined;
+    const from = this._currentAction
+      ? this._currentAction
+      : { at: 0, pos: this._knockRodInvert ? 100 : 0 };
+    const to = next || { at: from.at + 1000, pos: from.pos };
+
+    const minDepth = this._knockRodParams.min;
+    const maxDepth = this._knockRodParams.max;
+    const posPercent = this._knockRodInvert
+      ? (100 - from.pos) / 100.0
+      : from.pos / 100.0;
+    const nextposPercent = this._knockRodInvert
+      ? (100 - to.pos) / 100.0
+      : to.pos / 100.0;
+
+    const posMillis = Interactive.interpolate(minDepth, maxDepth, posPercent);
+    const nextPosMillis = Interactive.interpolate(
+      minDepth,
+      maxDepth,
+      nextposPercent
+    );
+    const deltaT = Math.floor((to.at - from.at) / this._playbackRate);
+
+    const deltaS = Math.abs(nextPosMillis - posMillis);
+    const velocity = Math.round((deltaS / deltaT) * 1000.0);
+    const velocityCapped = Math.max(500, Math.min(35000, Math.round(velocity)));
+
+    if (this._knockRod) {
+      this._knockRod!.moveTo(
+        nextPosMillis,
+        velocityCapped,
+        this._knockRodParams.smoothness
+      );
+    } else {
+      console.info(
+        `simulating move to: ${nextPosMillis} ${velocity} ${this._knockRodParams.smoothness}`
+      );
+    }
+
+    this._pendingKnockRodTick = setTimeout(() => {
+      this._currentIndex++;
+      this._currentAction = this._script?.actions[this._currentIndex];
+      //console.info("scheduled index ", this._currentIndex, this._currentAction)
+      if (this._currentAction) {
+        // if there is a next tick
+        this.tick();
+      }
+    }, deltaT);
+  }
+
+  private _currentIndex: number = -1;
+  private _currentAction: IAction | undefined = { pos: 0, at: 0 };
+  private _knockRodInvert: boolean = true;
+
+  private _knockRodParams: { min: number; max: number; smoothness: number } = {
+    min: 2000,
+    max: 16000,
+    smoothness: 30,
+  };
+  private _knockRodPlaying: boolean = false;
+
+  private _pendingKnockRodTick: any;
+  private _playbackRate: number = 1;
+
+  private _script: IFunscript | undefined;
+  private _knockRodState: KnockRodState | undefined;
+  private _knockRod: KnockRod | undefined;
 }

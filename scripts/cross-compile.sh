@@ -14,7 +14,7 @@ DARWIN_ARM64="echo '=== Building OSX (arm64) binary ==='; $SETENV make cross-com
 LINUX_AMD64="echo '=== Building Linux (amd64) binary ==='; $SETENV make cross-compile-linux;"
 LINUX_ARM64v8="echo '=== Building Linux (armv8/arm64) binary ==='; $SETENV make cross-compile-linux-arm64v8;"
 LINUX_ARM32v7="echo '=== Building Linux (armv7/armhf) binary ==='; $SETENV make cross-compile-linux-arm32v7;"
-LINUX_ARM32v6="echo '=== Building Linux (armv6 | Raspberry Pi 1) binary ==='; $SETENV make cross-compile-pi;"
+LINUX_ARM32v6="echo '=== Building Linux (armv6 | Raspberry Pi 1) binary ==='; $SETENV make cross-compile-linux-arm32v6;"
 BUILD_COMPLETE="echo '=== Build complete ==='"
 
 BUILD=`echo "$1" | cut -d - -f 1`
