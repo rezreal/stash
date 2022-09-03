@@ -136,8 +136,9 @@ export class Interactive {
 
   async uploadScript(funscriptPath: string) {
     console.info("uploading scripts");
-    await this.uploadScriptKnockRod(funscriptPath);
+
     try {
+      await this.uploadScriptKnockRod(funscriptPath);
     } catch (e) {
       console.error("coud not connect to knockrod...", e);
     }
